@@ -1,0 +1,101 @@
+---
+# DriftWatch — Ansible deployment playbook
+# Pulls the repo onto the EC2 host, installs Python deps,
+# and runs serve.py as a systemd service on port 8080.
+#
+# Triggered by Jenkins after `terraform apply`.
+
+- name: Deploy DriftWatch to EC2
+  hosts: drift_app
+  become: true
+  gather_facts: true
+
+  vars:
+    app_dir: /opt/driftwatch
+    repo_url: "https://github.com/Aditya160405/gitops-drift-detector.git"
+    repo_branch: main
+    aws_region: ap-south-1
+    service_user: ec2-user
+    service_port: 8080
+
+  tasks:
+
+    # ── 1. Make sure system packages are present ─────────────────────────────
+    - name: Install required system packages
+      ansible.builtin.dnf:
+        name:
+          - python3
+          - python3-pip
+          - git
+        state: present
+
+    # ── 2. Clone (or update) the repo on the EC2 host ────────────────────────
+    - name: Clone DriftWatch repository
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_dir }}"
+        version: "{{ repo_branch }}"
+        force: true
+      become_user: "{{ service_user }}"
+
+    # ── 3. Install Python dependencies ───────────────────────────────────────
+    - name: Install Python requirements
+      ansible.builtin.pip:
+        requirements: "{{ app_dir }}/scripts/requirements.txt"
+        executable: pip3
+        extra_args: "--break-system-packages"
+
+    # ── 4. Drop in a systemd unit that runs serve.py ─────────────────────────
+    - name: Install systemd unit for DriftWatch
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/driftwatch.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=DriftWatch Dashboard
+          After=network.target
+
+          [Service]
+          Type=simple
+          User={{ service_user }}
+          WorkingDirectory={{ app_dir }}
+          Environment=AWS_REGION={{ aws_region }}
+          Environment=HOST=0.0.0.0
+          Environment=PORT={{ service_port }}
+          ExecStart=/usr/bin/python3 {{ app_dir }}/serve.py
+          Restart=on-failure
+          RestartSec=3
+
+          [Install]
+          WantedBy=multi-user.target
+
+    # ── 5. Make sure the app dir is owned by the service user ────────────────
+    - name: Ensure app directory is owned by service user
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        owner: "{{ service_user }}"
+        group: "{{ service_user }}"
+        recurse: true
+
+    # ── 6. Reload systemd, enable + start the service ────────────────────────
+    - name: Reload systemd and start DriftWatch
+      ansible.builtin.systemd:
+        name: driftwatch
+        enabled: true
+        state: restarted
+        daemon_reload: true
+
+    # ── 7. Wait for the dashboard to come up ─────────────────────────────────
+    - name: Wait for dashboard to be reachable
+      ansible.builtin.wait_for:
+        host: "{{ inventory_hostname }}"
+        port: "{{ service_port }}"
+        timeout: 60
+        delay: 3
+      delegate_to: localhost
+      become: false
+
+    # ── 8. Print the final URL ───────────────────────────────────────────────
+    - name: Show dashboard URL
+      ansible.builtin.debug:
+        msg: "✅ DriftWatch live at http://{{ inventory_hostname }}:{{ service_port }}"
