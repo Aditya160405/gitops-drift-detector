@@ -61,6 +61,8 @@
           Environment=AWS_REGION={{ aws_region }}
           Environment=HOST=0.0.0.0
           Environment=PORT={{ service_port }}
+          Environment=TF_STATE_S3_BUCKET=aditya-drift-tfstate
+          Environment=TF_STATE_S3_KEY=terraform.tfstate
           ExecStart=/usr/bin/python3 {{ app_dir }}/serve.py
           Restart=on-failure
           RestartSec=3
