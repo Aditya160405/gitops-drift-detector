@@ -42,6 +42,7 @@
       ansible.builtin.pip:
         requirements: "{{ app_dir }}/scripts/requirements.txt"
         executable: pip3
+        extra_args: "--ignore-installed"
 
     # ── 4. Drop in a systemd unit that runs serve.py ─────────────────────────
     - name: Install systemd unit for DriftWatch
