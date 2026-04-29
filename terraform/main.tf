@@ -71,6 +71,11 @@ variable "github_repo" {
   default     = "gitops-drift-detector"  # <-- change if different
 }
 
+variable "ssh_public_key" {
+  description = "Public SSH key contents for EC2 access"
+  type        = string
+}
+
 ###############################################################################
 # NETWORKING
 ###############################################################################
@@ -147,6 +152,14 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    description = "DriftWatch dashboard"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -178,6 +191,11 @@ data "aws_ami" "amazon_linux_2023" {
 
 data "aws_caller_identity" "current" {}
 
+resource "aws_key_pair" "deployer" {
+  key_name   = "drift-demo-key"
+  public_key = var.ssh_public_key
+}
+
 resource "aws_instance" "app" {
   ami                    = data.aws_ami.amazon_linux_2023.id
   instance_type          = var.ec2_instance_type
@@ -185,6 +203,7 @@ resource "aws_instance" "app" {
   vpc_security_group_ids = [aws_security_group.app.id]
   iam_instance_profile   = aws_iam_instance_profile.app.name
   monitoring             = true
+  key_name = aws_key_pair.deployer.key_name
 
   metadata_options {
     http_endpoint               = "enabled"
@@ -202,9 +221,8 @@ resource "aws_instance" "app" {
   user_data = base64encode(<<-EOT
     #!/bin/bash
     yum update -y
-    yum install -y nginx
-    systemctl enable nginx
-    systemctl start nginx
+    yum install -y python3 python3-pip git
+    pip3 install boto3 requests
   EOT
   )
 
@@ -428,4 +446,9 @@ output "app_security_group_id" {
 output "assets_bucket_name" {
   description = "S3 bucket name to watch for drift"
   value       = aws_s3_bucket.assets.id
+}
+
+output "app_public_ip" {
+  description = "Public IP of the DriftWatch app server (Ansible/Jenkins reads this)"
+  value       = aws_instance.app.public_ip
 }
