@@ -36,7 +36,6 @@
         dest: "{{ app_dir }}"
         version: "{{ repo_branch }}"
         force: true
-      become_user: "{{ service_user }}"
 
     # ── 3. Install Python dependencies ───────────────────────────────────────
     - name: Install Python requirements
