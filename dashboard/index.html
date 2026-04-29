@@ -1,0 +1,1226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DriftWatch — GitOps Config Drift Detector</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #070b0f;
+    --surface: #0d1318;
+    --surface2: #111820;
+    --border: rgba(255,255,255,0.06);
+    --accent: #00e5ff;
+    --accent-dim: rgba(0,229,255,0.12);
+    --accent-glow: rgba(0,229,255,0.3);
+    --red: #ff3b5c;
+    --red-dim: rgba(255,59,92,0.12);
+    --orange: #ff8c42;
+    --orange-dim: rgba(255,140,66,0.12);
+    --yellow: #ffd166;
+    --yellow-dim: rgba(255,209,102,0.12);
+    --green: #06d6a0;
+    --green-dim: rgba(6,214,160,0.12);
+    --text: #e2e8f0;
+    --text-dim: #64748b;
+    --text-muted: #334155;
+    --font-display: 'Syne', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Noise texture overlay ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Animated grid background ── */
+  .grid-bg {
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,229,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,255,0.025) 1px, transparent 1px);
+    background-size: 48px 48px;
+    animation: gridShift 20s linear infinite;
+    pointer-events: none;
+    z-index: 0;
+  }
+  @keyframes gridShift {
+    0% { background-position: 0 0; }
+    100% { background-position: 48px 48px; }
+  }
+
+  /* ── Top glow ── */
+  .top-glow {
+    position: fixed;
+    top: -200px; left: 50%; transform: translateX(-50%);
+    width: 800px; height: 400px;
+    background: radial-gradient(ellipse, rgba(0,229,255,0.07) 0%, transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Layout ── */
+  .container {
+    position: relative;
+    z-index: 1;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 24px 80px;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 28px 0 36px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 40px;
+  }
+
+  .logo-group {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .logo-icon {
+    width: 44px; height: 44px;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    box-shadow: 0 0 20px var(--accent-glow);
+    animation: iconPulse 3s ease-in-out infinite;
+  }
+  @keyframes iconPulse {
+    0%,100% { box-shadow: 0 0 20px var(--accent-glow); }
+    50% { box-shadow: 0 0 35px var(--accent-glow), 0 0 60px rgba(0,229,255,0.1); }
+  }
+
+  .logo-icon svg { width: 22px; height: 22px; color: var(--accent); }
+
+  .logo-text {
+    font-family: var(--font-display);
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+  }
+  .logo-text span { color: var(--accent); }
+
+  .logo-sub {
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .scan-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 20px;
+    background: var(--accent);
+    color: #070b0f;
+    border: none;
+    border-radius: 8px;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .scan-btn:hover { background: #33eeff; transform: translateY(-1px); box-shadow: 0 4px 20px var(--accent-glow); }
+  .scan-btn:active { transform: translateY(0); }
+  .scan-btn.scanning { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); }
+
+  .live-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-dim);
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+  }
+  .live-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    animation: blink 1.5s ease-in-out infinite;
+  }
+  @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* ── Status Banner ── */
+  .status-banner {
+    border-radius: 14px;
+    padding: 20px 28px;
+    margin-bottom: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border: 1px solid;
+    animation: bannerIn 0.5s ease forwards;
+  }
+  @keyframes bannerIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+
+  .banner-drift {
+    background: rgba(255,59,92,0.06);
+    border-color: rgba(255,59,92,0.3);
+  }
+  .banner-clean {
+    background: rgba(6,214,160,0.06);
+    border-color: rgba(6,214,160,0.3);
+  }
+
+  .banner-left { display: flex; align-items: center; gap: 16px; }
+  .banner-icon { font-size: 28px; line-height: 1; }
+  .banner-title {
+    font-family: var(--font-display);
+    font-size: 18px;
+    font-weight: 700;
+  }
+  .banner-sub { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
+  .banner-meta { font-size: 11px; color: var(--text-dim); text-align: right; }
+  .banner-scan-id { font-size: 12px; color: var(--accent); font-weight: 600; margin-top: 3px; }
+
+  /* ── Stat Cards ── */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin-bottom: 36px;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s, transform 0.2s;
+    animation: cardIn 0.4s ease both;
+  }
+  .stat-card:hover { border-color: rgba(255,255,255,0.12); transform: translateY(-2px); }
+  @keyframes cardIn { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+  .stat-card:nth-child(1) { animation-delay: 0.05s; }
+  .stat-card:nth-child(2) { animation-delay: 0.1s; }
+  .stat-card:nth-child(3) { animation-delay: 0.15s; }
+  .stat-card:nth-child(4) { animation-delay: 0.2s; }
+  .stat-card:nth-child(5) { animation-delay: 0.25s; }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    border-radius: 12px 12px 0 0;
+  }
+  .stat-card.critical::before { background: var(--red); box-shadow: 0 0 12px var(--red); }
+  .stat-card.high::before { background: var(--orange); }
+  .stat-card.medium::before { background: var(--yellow); }
+  .stat-card.clean::before { background: var(--green); }
+  .stat-card.info::before { background: var(--accent); }
+
+  .stat-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+  }
+  .stat-value {
+    font-family: var(--font-display);
+    font-size: 36px;
+    font-weight: 800;
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+  .stat-card.critical .stat-value { color: var(--red); }
+  .stat-card.high .stat-value { color: var(--orange); }
+  .stat-card.medium .stat-value { color: var(--yellow); }
+  .stat-card.clean .stat-value { color: var(--green); }
+  .stat-card.info .stat-value { color: var(--accent); }
+  .stat-sub { font-size: 11px; color: var(--text-dim); }
+
+  /* ── Main grid ── */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 24px;
+  }
+
+  /* ── Drift Table ── */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .panel-title {
+    font-family: var(--font-display);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .panel-count {
+    background: var(--red-dim);
+    color: var(--red);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 20px;
+    border: 1px solid rgba(255,59,92,0.2);
+  }
+
+  .filter-row {
+    display: flex;
+    gap: 8px;
+  }
+  .filter-btn {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .filter-btn.active, .filter-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-dim);
+  }
+  .filter-btn.f-critical.active { border-color: var(--red); color: var(--red); background: var(--red-dim); }
+  .filter-btn.f-high.active { border-color: var(--orange); color: var(--orange); background: var(--orange-dim); }
+  .filter-btn.f-medium.active { border-color: var(--yellow); color: var(--yellow); background: var(--yellow-dim); }
+
+  .drift-table { width: 100%; border-collapse: collapse; }
+  .drift-table th {
+    text-align: left;
+    padding: 10px 16px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+  }
+  .drift-table td {
+    padding: 13px 16px;
+    font-size: 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .drift-table tr:last-child td { border-bottom: none; }
+  .drift-table tbody tr {
+    transition: background 0.15s;
+    animation: rowIn 0.3s ease both;
+  }
+  .drift-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+  @keyframes rowIn { from { opacity: 0; } to { opacity: 1; } }
+
+  .resource-type {
+    font-size: 11px;
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .resource-id {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+
+  .attr-name { color: var(--text); font-weight: 500; }
+  .val { font-size: 11px; }
+  .val-expected { color: var(--green); }
+  .val-actual { color: var(--red); }
+  .val-arrow { color: var(--text-muted); margin: 0 4px; }
+
+  .sev-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 3px 8px;
+    border-radius: 4px;
+  }
+  .sev-critical { background: var(--red-dim); color: var(--red); border: 1px solid rgba(255,59,92,0.25); }
+  .sev-high { background: var(--orange-dim); color: var(--orange); border: 1px solid rgba(255,140,66,0.25); }
+  .sev-medium { background: var(--yellow-dim); color: var(--yellow); border: 1px solid rgba(255,209,102,0.25); }
+  .sev-low { background: var(--green-dim); color: var(--green); border: 1px solid rgba(6,214,160,0.25); }
+
+  /* ── Right sidebar ── */
+  .sidebar { display: flex; flex-direction: column; gap: 20px; }
+
+  /* ── Timeline ── */
+  .timeline { padding: 0 22px 22px; }
+  .timeline-item {
+    display: flex;
+    gap: 14px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+    animation: rowIn 0.4s ease both;
+  }
+  .timeline-item:last-child { border-bottom: none; }
+  .tl-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-top: 5px;
+    flex-shrink: 0;
+  }
+  .tl-dot.drift { background: var(--red); box-shadow: 0 0 8px var(--red); }
+  .tl-dot.clean { background: var(--green); }
+  .tl-dot.warn { background: var(--yellow); }
+  .tl-content { flex: 1; }
+  .tl-title { font-size: 12px; font-weight: 500; line-height: 1.4; }
+  .tl-meta { font-size: 10px; color: var(--text-dim); margin-top: 3px; }
+
+  /* ── Pie chart ── */
+  .chart-area {
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .donut-wrap { position: relative; width: 140px; height: 140px; }
+  .donut-wrap svg { transform: rotate(-90deg); }
+  .donut-center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+  }
+  .donut-num {
+    font-family: var(--font-display);
+    font-size: 30px;
+    font-weight: 800;
+    color: var(--red);
+    line-height: 1;
+  }
+  .donut-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
+
+  .chart-legend { width: 100%; }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .legend-item:last-child { border-bottom: none; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 2px; margin-right: 10px; flex-shrink: 0; }
+  .legend-left { display: flex; align-items: center; }
+  .legend-count { font-weight: 600; }
+
+  /* ── Remediation panel ── */
+  .remediation-steps { padding: 0 22px 22px; }
+  .step {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+  .step-num {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 700;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .step-text { font-size: 12px; line-height: 1.6; color: var(--text-dim); }
+  .step-text strong { color: var(--text); font-weight: 500; }
+  .step-code {
+    display: block;
+    margin-top: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 11px;
+    color: var(--accent);
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
+  /* ── Scan progress overlay ── */
+  .scan-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(7,11,15,0.85);
+    backdrop-filter: blur(4px);
+    z-index: 100;
+    display: none;
+    place-items: center;
+  }
+  .scan-overlay.active { display: grid; }
+
+  .scan-modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 48px 56px;
+    text-align: center;
+    width: 420px;
+    box-shadow: 0 0 80px rgba(0,0,0,0.5);
+    animation: modalIn 0.3s ease;
+  }
+  @keyframes modalIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+
+  .scan-spinner {
+    width: 64px; height: 64px;
+    margin: 0 auto 24px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+    box-shadow: 0 0 20px var(--accent-glow);
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .scan-title {
+    font-family: var(--font-display);
+    font-size: 20px;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+  .scan-status { font-size: 12px; color: var(--text-dim); margin-bottom: 28px; height: 18px; }
+
+  .scan-progress-bar {
+    width: 100%;
+    height: 4px;
+    background: var(--surface2);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .scan-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent), #33eeff);
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.3s ease;
+    box-shadow: 0 0 12px var(--accent-glow);
+  }
+  .scan-pct { font-size: 12px; color: var(--accent); font-weight: 600; }
+
+  /* ── Responsive ── */
+  @media (max-width: 900px) {
+    .main-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ── Empty state ── */
+  .empty-state {
+    padding: 60px 20px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
+    display: none;
+  }
+  .empty-state .icon { font-size: 36px; margin-bottom: 12px; }
+  .empty-state.visible { display: block; }
+
+  /* Animate numbers */
+  .counting { display: inline-block; }
+</style>
+</head>
+<body>
+
+<div class="grid-bg"></div>
+<div class="top-glow"></div>
+
+<div class="container">
+
+  <!-- ── Header ── -->
+  <header>
+    <div class="logo-group">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+          <path d="M2 17l10 5 10-5"/>
+          <path d="M2 12l10 5 10-5"/>
+        </svg>
+      </div>
+      <div>
+        <div class="logo-text">Drift<span>Watch</span></div>
+        <div class="logo-sub">GitOps Config Drift Detector · AWS</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="live-badge">
+        <div class="live-dot"></div>
+        <span>Scheduled · Every 6h</span>
+      </div>
+      <button class="scan-btn" id="scanBtn" onclick="triggerScan()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+        </svg>
+        Run Scan Now
+      </button>
+    </div>
+  </header>
+
+  <!-- ── Status Banner ── -->
+  <div class="status-banner banner-drift" id="statusBanner">
+    <div class="banner-left">
+      <div class="banner-icon">🚨</div>
+      <div>
+        <div class="banner-title" id="bannerTitle">Config Drift Detected — 3 Resources Affected</div>
+        <div class="banner-sub" id="bannerSub">Manual changes detected across EC2, S3, and Security Group resources. GitHub issue #47 opened.</div>
+      </div>
+    </div>
+    <div class="banner-meta">
+      <div>Last scan: <span id="lastScanTime">2 minutes ago</span></div>
+      <div class="banner-scan-id" id="scanId">Scan ID: #a3f8c1d2</div>
+    </div>
+  </div>
+
+  <!-- ── Stat Cards ── -->
+  <div class="stats-grid">
+    <div class="stat-card info">
+      <div class="stat-label">Resources Checked</div>
+      <div class="stat-value" id="totalCount">0</div>
+      <div class="stat-sub">across ap-south-1</div>
+    </div>
+    <div class="stat-card critical">
+      <div class="stat-label">Critical Drift</div>
+      <div class="stat-value" id="critCount">0</div>
+      <div class="stat-sub">require immediate action</div>
+    </div>
+    <div class="stat-card high">
+      <div class="stat-label">High Severity</div>
+      <div class="stat-value" id="highCount">0</div>
+      <div class="stat-sub">security-relevant changes</div>
+    </div>
+    <div class="stat-card medium">
+      <div class="stat-label">Medium Severity</div>
+      <div class="stat-value" id="medCount">0</div>
+      <div class="stat-sub">configuration drift</div>
+    </div>
+    <div class="stat-card clean">
+      <div class="stat-label">Clean Resources</div>
+      <div class="stat-value" id="cleanCount">0</div>
+      <div class="stat-sub">match Terraform state</div>
+    </div>
+  </div>
+
+  <!-- ── Main Grid ── -->
+  <div class="main-grid">
+
+    <!-- ── Left: Drift Table ── -->
+    <div>
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            Drift Items
+            <span class="panel-count" id="driftCount">7 drifted</span>
+          </div>
+          <div class="filter-row">
+            <button class="filter-btn active" onclick="filterDrift('all', this)">All</button>
+            <button class="filter-btn f-critical" onclick="filterDrift('critical', this)">Critical</button>
+            <button class="filter-btn f-high" onclick="filterDrift('high', this)">High</button>
+            <button class="filter-btn f-medium" onclick="filterDrift('medium', this)">Medium</button>
+          </div>
+        </div>
+
+        <div style="overflow-x:auto;">
+          <table class="drift-table">
+            <thead>
+              <tr>
+                <th>Resource</th>
+                <th>Attribute</th>
+                <th>Expected → Actual</th>
+                <th>Severity</th>
+              </tr>
+            </thead>
+            <tbody id="driftTableBody"></tbody>
+          </table>
+          <div class="empty-state" id="emptyState">
+            <div class="icon">✅</div>
+            <div>No drift items match the current filter.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Right Sidebar ── -->
+    <div class="sidebar">
+
+      <!-- Donut chart -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Severity Breakdown</div>
+        </div>
+        <div class="chart-area">
+          <div class="donut-wrap">
+            <svg width="140" height="140" viewBox="0 0 140 140">
+              <!-- Background ring -->
+              <circle cx="70" cy="70" r="56" fill="none" stroke="#111820" stroke-width="16"/>
+              <!-- Critical (2) -->
+              <circle cx="70" cy="70" r="56" fill="none" stroke="#ff3b5c" stroke-width="16"
+                stroke-dasharray="100.5 251.3" stroke-dashoffset="0" stroke-linecap="butt" id="arcCritical"/>
+              <!-- High (3) -->
+              <circle cx="70" cy="70" r="56" fill="none" stroke="#ff8c42" stroke-width="16"
+                stroke-dasharray="150.8 251.3" stroke-dashoffset="-100.5" id="arcHigh"/>
+              <!-- Medium (2) -->
+              <circle cx="70" cy="70" r="56" fill="none" stroke="#ffd166" stroke-width="16"
+                stroke-dasharray="100.5 251.3" stroke-dashoffset="-251.3" id="arcMedium"/>
+            </svg>
+            <div class="donut-center">
+              <div class="donut-num" id="donutNum">7</div>
+              <div class="donut-label">drifts</div>
+            </div>
+          </div>
+          <div class="chart-legend">
+            <div class="legend-item">
+              <div class="legend-left">
+                <div class="legend-dot" style="background:var(--red)"></div>
+                Critical
+              </div>
+              <div class="legend-count" style="color:var(--red)" id="leg-critical">2</div>
+            </div>
+            <div class="legend-item">
+              <div class="legend-left">
+                <div class="legend-dot" style="background:var(--orange)"></div>
+                High
+              </div>
+              <div class="legend-count" style="color:var(--orange)" id="leg-high">3</div>
+            </div>
+            <div class="legend-item">
+              <div class="legend-left">
+                <div class="legend-dot" style="background:var(--yellow)"></div>
+                Medium
+              </div>
+              <div class="legend-count" style="color:var(--yellow)" id="leg-medium">2</div>
+            </div>
+            <div class="legend-item">
+              <div class="legend-left">
+                <div class="legend-dot" style="background:var(--green)"></div>
+                Low
+              </div>
+              <div class="legend-count" style="color:var(--green)" id="leg-low">0</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scan history -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Scan History</div>
+        </div>
+        <div class="timeline" id="scanTimeline"><div style="padding:20px 0;color:var(--text-dim);font-size:12px;">Loading history…</div></div>
+      </div>
+
+      <!-- Remediation -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Quick Remediation</div>
+        </div>
+        <div class="remediation-steps">
+          <div class="step">
+            <div class="step-num">1</div>
+            <div class="step-text">
+              <strong>Review the drift</strong><br>
+              Check the GitHub issue for full context and affected resources.
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">2</div>
+            <div class="step-text">
+              <strong>Re-apply Terraform</strong>
+              <code class="step-code">terraform plan && terraform apply</code>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">3</div>
+            <div class="step-text">
+              <strong>Or run Ansible auto-remediation</strong>
+              <code class="step-code">ansible-playbook remediate_drift.yml</code>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">4</div>
+            <div class="step-text">
+              <strong>Trigger a new scan</strong> to confirm drift is resolved. The GitHub issue will auto-close.
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ── Scan Overlay ── -->
+<div class="scan-overlay" id="scanOverlay">
+  <div class="scan-modal">
+    <div class="scan-spinner"></div>
+    <div class="scan-title">Running Drift Scan</div>
+    <div class="scan-status" id="scanStatus">Initializing AWS connection…</div>
+    <div class="scan-progress-bar">
+      <div class="scan-progress-fill" id="scanProgress"></div>
+    </div>
+    <div class="scan-pct" id="scanPct">0%</div>
+  </div>
+</div>
+
+<script>
+// ── Load real drift-report.json, fall back to demo data ────────────────────
+
+// ── Set your GitHub repo here for the "Run Scan Now" button ──────────────────
+// e.g. window.GITHUB_REPO = 'kaushal-gahlawat/gitops-drift-detector'
+window.GITHUB_REPO = '';   // leave blank to use local scan animation
+
+const DEMO_DATA = {
+  scan_id: 'demo-mode',
+  timestamp: new Date().toISOString(),
+  aws_region: 'ap-south-1',
+  total_resources_checked: 0,
+  drifted_resources: 0,
+  drift_items: [],
+  errors: []
+};
+
+let driftData = [];
+let report = DEMO_DATA;
+let currentFilter = 'all';
+
+// ── Scan History (stored in scan-history.json, built by detector) ────────────
+async function loadScanHistory() {
+  const container = document.getElementById('scanTimeline');
+  if (!container) return;
+
+  try {
+    const resp = await fetch('scan-history.json?_=' + Date.now());
+    if (!resp.ok) throw new Error('not found');
+    const history = await resp.json();  // array, newest first
+
+    if (!history.length) {
+      container.innerHTML = '<div style="padding:16px 0;color:var(--text-dim);font-size:12px;">No scans recorded yet.</div>';
+      return;
+    }
+
+    container.innerHTML = history.slice(0, 8).map(entry => {
+      const dotClass = entry.drifted > 0 ? 'drift' : entry.drifted === -1 ? 'warn' : 'clean';
+      const title = entry.drifted > 0
+        ? `${entry.drifted} drift item(s) detected`
+        : entry.drifted === -1
+          ? 'Scan error — check logs'
+          : 'No drift — all resources clean';
+      const meta = [
+        timeAgo(new Date(entry.timestamp)),
+        entry.scan_id ? `#${entry.scan_id}` : '',
+        entry.issue_url ? `<a href="${entry.issue_url}" target="_blank" style="color:var(--accent);text-decoration:none;">Issue opened ↗</a>` : ''
+      ].filter(Boolean).join(' · ');
+
+      return `
+        <div class="timeline-item">
+          <div class="tl-dot ${dotClass}"></div>
+          <div class="tl-content">
+            <div class="tl-title">${title}</div>
+            <div class="tl-meta">${meta}</div>
+          </div>
+        </div>`;
+    }).join('');
+
+  } catch(e) {
+    // No history file yet — show a helpful message instead of fake data
+    container.innerHTML = `
+      <div class="timeline-item">
+        <div class="tl-dot" style="background:var(--text-muted)"></div>
+        <div class="tl-content">
+          <div class="tl-title" style="color:var(--text-dim)">No scan history yet</div>
+          <div class="tl-meta">History builds automatically after each scan run</div>
+        </div>
+      </div>`;
+  }
+}
+
+async function loadReport() {
+  try {
+    const resp = await fetch('drift-report.json?_=' + Date.now());
+    if (!resp.ok) throw new Error('not found');
+    report = await resp.json();
+    driftData = report.drift_items || [];
+    applyReport();
+  } catch (e) {
+    // No real report found — show a clear notice and use empty state
+    document.getElementById('bannerTitle').textContent = 'No drift-report.json found — run the detector first';
+    document.getElementById('bannerSub').textContent =
+      'Run: python scripts/drift_detector.py — then refresh this page to see real AWS data.';
+    document.getElementById('statusBanner').className = 'status-banner banner-clean';
+    document.querySelector('.banner-icon').textContent = 'ℹ️';
+    applyReport();
+  }
+}
+
+function applyReport() {
+  const total   = report.total_resources_checked || 0;
+  const items   = report.drift_items || [];
+  const counts  = { critical: 0, high: 0, medium: 0, low: 0 };
+  items.forEach(d => { if (counts[d.severity] !== undefined) counts[d.severity]++; });
+  const clean   = Math.max(0, total - report.drifted_resources);
+  const region  = report.aws_region || 'ap-south-1';
+
+  // ── Stat cards ──────────────────────────────────────────────────────────
+  animateCount('totalCount', total);
+  animateCount('critCount',  counts.critical);
+  animateCount('highCount',  counts.high);
+  animateCount('medCount',   counts.medium);
+  animateCount('cleanCount', clean);
+
+  // Update "across region" label
+  document.querySelector('.stat-card.info .stat-sub').textContent = 'across ' + region;
+
+  // ── Banner ──────────────────────────────────────────────────────────────
+  const ts = report.timestamp ? new Date(report.timestamp) : new Date();
+  const ago = timeAgo(ts);
+  document.getElementById('lastScanTime').textContent = ago;
+  document.getElementById('scanId').textContent = 'Scan ID: #' + (report.scan_id || 'unknown');
+
+  if (items.length > 0) {
+    document.getElementById('statusBanner').className = 'status-banner banner-drift';
+    document.querySelector('.banner-icon').textContent = '🚨';
+    document.getElementById('bannerTitle').textContent =
+      `Config Drift Detected — ${report.drifted_resources} Resource(s) Affected`;
+    document.getElementById('bannerSub').textContent =
+      `${items.length} attribute(s) differ from Terraform state across ${region}. Check GitHub Issues for remediation steps.`;
+  } else if (total > 0) {
+    document.getElementById('statusBanner').className = 'status-banner banner-clean';
+    document.querySelector('.banner-icon').textContent = '✅';
+    document.getElementById('bannerTitle').textContent = 'All Clear — No Drift Detected';
+    document.getElementById('bannerSub').textContent =
+      `${total} resource(s) checked across ${region} — all match Terraform state.`;
+  }
+
+  // ── Drift count badge ────────────────────────────────────────────────────
+  document.getElementById('driftCount').textContent =
+    items.length > 0 ? `${items.length} drifted` : 'clean ✓';
+
+  // ── Scan messages (use real resource count) ──────────────────────────────
+  scanMessages[2] = `Extracting ${total} resource definitions…`;
+
+  // ── Table + donut ────────────────────────────────────────────────────────
+  renderTable();
+  updateDonut(counts, items.length);
+}
+
+// ── Animate a number counting up ────────────────────────────────────────────
+function animateCount(id, target) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  let current = 0;
+  const step = Math.max(1, Math.ceil(target / 24));
+  clearInterval(el._timer);
+  el._timer = setInterval(() => {
+    current = Math.min(current + step, target);
+    el.textContent = current;
+    if (current >= target) clearInterval(el._timer);
+  }, 40);
+}
+
+// ── Time ago helper ──────────────────────────────────────────────────────────
+function timeAgo(date) {
+  const diff = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (diff < 60) return diff + ' seconds ago';
+  if (diff < 3600) return Math.floor(diff / 60) + ' minutes ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + ' hours ago';
+  return Math.floor(diff / 86400) + ' days ago';
+}
+
+// ── Table render ─────────────────────────────────────────────────────────────
+function renderTable() {
+  const tbody = document.getElementById('driftTableBody');
+  const empty = document.getElementById('emptyState');
+  const filtered = currentFilter === 'all'
+    ? driftData
+    : driftData.filter(d => d.severity === currentFilter);
+
+  if (filtered.length === 0) {
+    tbody.innerHTML = '';
+    empty.classList.add('visible');
+    return;
+  }
+  empty.classList.remove('visible');
+
+  tbody.innerHTML = filtered.map((d, i) => `
+    <tr style="animation-delay:${i * 0.04}s">
+      <td>
+        <div class="resource-type">${d.resource_type}</div>
+        <div class="resource-id">${d.resource_id}</div>
+      </td>
+      <td><span class="attr-name">${d.attribute}</span></td>
+      <td>
+        <span class="val val-expected">${fmt(d.expected)}</span>
+        <span class="val val-arrow">→</span>
+        <span class="val val-actual">${fmt(d.actual)}</span>
+      </td>
+      <td><span class="sev-badge sev-${d.severity}">${sevIcon(d.severity)} ${d.severity}</span></td>
+    </tr>
+  `).join('');
+}
+
+function fmt(val) {
+  if (val === null || val === undefined) return 'null';
+  if (typeof val === 'object') {
+    try { return JSON.stringify(val, null, 0); }
+    catch(e) { return String(val); }
+  }
+  // Truncate very long strings (e.g. JSON policies)
+  const s = String(val);
+  return s.length > 80 ? s.slice(0, 80) + '…' : s;
+}
+
+function sevIcon(s) {
+  return { critical: '●', high: '◆', medium: '▲', low: '◉' }[s] || '●';
+}
+
+function filterDrift(sev, btn) {
+  currentFilter = sev;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderTable();
+}
+
+// ── Donut chart ──────────────────────────────────────────────────────────────
+function updateDonut(counts, total) {
+  if (!counts) {
+    counts = { critical: 0, high: 0, medium: 0, low: 0 };
+    driftData.forEach(d => { if (counts[d.severity] !== undefined) counts[d.severity]++; });
+    total = driftData.length;
+  }
+  const circ = 2 * Math.PI * 56;
+
+  if (total === 0) {
+    ['Critical','High','Medium','Low'].forEach(s => {
+      const arc = document.getElementById('arc' + s);
+      if (arc) { arc.setAttribute('stroke-dasharray', `0 ${circ}`); arc.setAttribute('stroke-dashoffset', '0'); }
+      const leg = document.getElementById('leg-' + s.toLowerCase());
+      if (leg) leg.textContent = '0';
+    });
+    document.getElementById('donutNum').textContent = '0';
+    return;
+  }
+
+  const order = ['critical','high','medium','low'];
+  let offset = 0;
+  order.forEach(sev => {
+    const arc = document.getElementById('arc' + sev.charAt(0).toUpperCase() + sev.slice(1));
+    if (!arc) return;
+    const len = (counts[sev] / total) * circ;
+    arc.setAttribute('stroke-dasharray', `${len} ${circ}`);
+    arc.setAttribute('stroke-dashoffset', -offset);
+    offset += len;
+    const leg = document.getElementById('leg-' + sev);
+    if (leg) leg.textContent = counts[sev];
+  });
+  document.getElementById('donutNum').textContent = total;
+}
+
+// ── Scan animation ────────────────────────────────────────────────────────────
+const scanMessages = [
+  'Authenticating with AWS via OIDC…',
+  'Loading Terraform state from S3…',
+  'Extracting resource definitions…',
+  'Querying EC2 instances…',
+  'Checking security groups…',
+  'Inspecting S3 bucket policies…',
+  'Auditing IAM roles…',
+  'Checking RDS instances…',
+  'Comparing desired vs live state…',
+  'Calculating drift severity…',
+  'Generating drift report…',
+  'Opening GitHub issue…',
+  'Scan complete!'
+];
+
+function triggerScan() {
+  const btn = document.getElementById('scanBtn');
+  if (btn.classList.contains('scanning')) return;  // already running
+
+  // Try to call the local serve.py API
+  fetch('/api/scan')
+    .then(r => r.json())
+    .then(data => {
+      if (data.started) {
+        startScanUI();   // show animated progress
+        streamLogs();    // stream real logs from server
+      } else {
+        alert('Scan already running — please wait.');
+      }
+    })
+    .catch(() => {
+      // serve.py not running — fall back to animation only
+      // and remind user to run via terminal
+      console.warn('serve.py not running, showing demo animation');
+      startScan();
+    });
+}
+
+function streamLogs() {
+  const status = document.getElementById('scanStatus');
+  const es = new EventSource('/api/scan/logs');
+
+  es.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    // Show the last log line in the scan modal
+    if (data.line) {
+      const clean = data.line
+        .replace(/^\d{4}-\d{2}-\d{2}T[\d:]+\s+\[INFO\]\s+/, '')
+        .replace(/^\d{4}-\d{2}-\d{2}T[\d:]+\s+\[WARNING\]\s+/, '⚠️ ')
+        .replace(/^\d{4}-\d{2}-\d{2}T[\d:]+\s+\[ERROR\]\s+/, '🔴 ');
+      if (status) status.textContent = clean;
+    }
+  };
+
+  es.addEventListener('done', async () => {
+    es.close();
+    // Reload report after scan finishes
+    await loadReport();
+    await loadScanHistory();
+    finishScanUI();
+  });
+
+  es.onerror = () => {
+    es.close();
+    finishScanUI();
+  };
+}
+
+function startScanUI() {
+  const btn = document.getElementById('scanBtn');
+  const overlay = document.getElementById('scanOverlay');
+  document.getElementById('scanProgress').style.width = '0%';
+  document.getElementById('scanPct').textContent = '0%';
+  document.getElementById('scanStatus').textContent = 'Connecting to AWS…';
+  overlay.classList.add('active');
+  btn.classList.add('scanning');
+  btn.textContent = 'Scanning…';
+  // Animate the progress bar slowly while real scan runs
+  let pct = 0;
+  const bar = document.getElementById('scanProgress');
+  const pctEl = document.getElementById('scanPct');
+  window._scanProgressTimer = setInterval(() => {
+    if (pct < 90) { pct += (90 - pct) * 0.04; }
+    bar.style.width = pct + '%';
+    pctEl.textContent = Math.round(pct) + '%';
+  }, 300);
+}
+
+function finishScanUI() {
+  clearInterval(window._scanProgressTimer);
+  document.getElementById('scanProgress').style.width = '100%';
+  document.getElementById('scanPct').textContent = '100%';
+  document.getElementById('scanStatus').textContent = 'Scan complete!';
+  setTimeout(() => {
+    document.getElementById('scanOverlay').classList.remove('active');
+    const btn = document.getElementById('scanBtn');
+    btn.classList.remove('scanning');
+    btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Run Scan Now`;
+  }, 800);
+}
+
+function startScan() {
+  const overlay  = document.getElementById('scanOverlay');
+  const progress = document.getElementById('scanProgress');
+  const pct      = document.getElementById('scanPct');
+  const status   = document.getElementById('scanStatus');
+  const btn      = document.getElementById('scanBtn');
+
+  overlay.classList.add('active');
+  btn.classList.add('scanning');
+  btn.textContent = 'Scanning…';
+
+  let step = 0;
+  const total = scanMessages.length;
+
+  const tick = () => {
+    if (step >= total) {
+      setTimeout(async () => {
+        overlay.classList.remove('active');
+        btn.classList.remove('scanning');
+        btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Run Scan Now`;
+        // Reload the report after scan animation completes
+        await loadReport();
+        await loadScanHistory();
+      }, 500);
+      return;
+    }
+    const p = Math.round((step / (total - 1)) * 100);
+    progress.style.width = p + '%';
+    pct.textContent = p + '%';
+    status.textContent = scanMessages[step];
+    step++;
+    setTimeout(tick, step === total ? 600 : 280 + Math.random() * 200);
+  };
+  tick();
+}
+
+// ── Init: load real data on page open ────────────────────────────────────────
+loadReport();
+loadScanHistory();
+
+// Auto-refresh every 60 seconds to pick up new scan results
+setInterval(() => { loadReport(); loadScanHistory(); }, 60000);
+</script>
+</body>
+</html>

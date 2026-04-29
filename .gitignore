@@ -1,0 +1,34 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Drift output
+drift-report.json
+terraform/drift-report.json
+
+# OS files
+.DS_Store
+Thumbs.db
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets / env
+.env
+*.pem
+*.key
+
+# Jenkins build artifacts
+inventory.ini
+app_ip.txt
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Logs
+*.log

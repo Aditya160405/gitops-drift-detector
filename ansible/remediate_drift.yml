@@ -1,0 +1,168 @@
+---
+# GitOps Drift Detector — Ansible Remediation Playbook
+# Reads drift-report.json and attempts automated remediation
+# for safe, well-understood drift patterns.
+#
+# Usage:
+#   ansible-playbook remediate_drift.yml \
+#     -e "drift_report_path=drift-report.json" \
+#     -e "aws_region=us-east-1"
+
+- name: GitOps Config Drift Remediation
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    drift_report_path: "drift-report.json"
+    aws_region: "us-east-1"
+    dry_run: false
+    auto_remediate_severities:
+      - low
+      - medium
+
+  tasks:
+    # ────────────────────────────────────────────────────────────────────────
+    - name: Load drift report
+      ansible.builtin.slurp:
+        src: "{{ drift_report_path }}"
+      register: raw_report
+
+    - name: Parse drift report
+      ansible.builtin.set_fact:
+        drift_report: "{{ raw_report.content | b64decode | from_json }}"
+
+    - name: Show drift summary
+      ansible.builtin.debug:
+        msg: |
+          Scan ID          : {{ drift_report.scan_id }}
+          Timestamp        : {{ drift_report.timestamp }}
+          Resources Checked: {{ drift_report.total_resources_checked }}
+          Drifted Resources: {{ drift_report.drifted_resources }}
+          Drift Items      : {{ drift_report.drift_items | length }}
+          DRY RUN          : {{ dry_run }}
+
+    - name: No drift — nothing to do
+      ansible.builtin.meta: end_play
+      when: drift_report.drift_items | length == 0
+
+    # ────────────────────────────────────────────────────────────────────────
+    # S3 Public Access Block — auto-remediate (critical security risk)
+    # ────────────────────────────────────────────────────────────────────────
+    - name: Find S3 public access drift items
+      ansible.builtin.set_fact:
+        s3_public_drifts: >-
+          {{
+            drift_report.drift_items
+            | selectattr('resource_type', 'equalto', 'aws_s3_bucket')
+            | selectattr('attribute', 'in', ['block_public_acls', 'block_public_policy'])
+            | list
+          }}
+
+    - name: Re-enable S3 Public Access Block where disabled
+      community.aws.s3_bucket:
+        name: "{{ item.resource_id }}"
+        block_public_acls: true
+        block_public_policy: true
+        ignore_public_acls: true
+        restrict_public_buckets: true
+        region: "{{ aws_region }}"
+      loop: "{{ s3_public_drifts | map(attribute='resource_id') | unique | list }}"
+      when:
+        - not dry_run
+        - s3_public_drifts | length > 0
+      register: s3_remediation
+
+    - name: Log S3 remediation (dry run)
+      ansible.builtin.debug:
+        msg: "DRY RUN — would re-enable public access block on S3 bucket: {{ item }}"
+      loop: "{{ s3_public_drifts | map(attribute='resource_id') | unique | list }}"
+      when:
+        - dry_run
+        - s3_public_drifts | length > 0
+
+    # ────────────────────────────────────────────────────────────────────────
+    # EC2 Instance Type — flag but do NOT auto-change (requires stop/start)
+    # ────────────────────────────────────────────────────────────────────────
+    - name: Identify EC2 instance type drift
+      ansible.builtin.set_fact:
+        ec2_type_drifts: >-
+          {{
+            drift_report.drift_items
+            | selectattr('resource_type', 'equalto', 'aws_instance')
+            | selectattr('attribute', 'equalto', 'instance_type')
+            | list
+          }}
+
+    - name: Warn about EC2 instance type drift (manual action required)
+      ansible.builtin.debug:
+        msg: |
+          ⚠️  EC2 INSTANCE TYPE DRIFT DETECTED — MANUAL ACTION REQUIRED
+          Resource : {{ item.resource_id }}
+          Expected : {{ item.expected }}
+          Actual   : {{ item.actual }}
+          To fix   : aws ec2 modify-instance-attribute \
+                       --instance-id {{ item.resource_id }} \
+                       --instance-type {{ item.expected }} \
+                       (requires instance stop first)
+      loop: "{{ ec2_type_drifts }}"
+      when: ec2_type_drifts | length > 0
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Security Group — log unauthorized ingress rules added via console
+    # ────────────────────────────────────────────────────────────────────────
+    - name: Identify security group drift
+      ansible.builtin.set_fact:
+        sg_drifts: >-
+          {{
+            drift_report.drift_items
+            | selectattr('resource_type', 'equalto', 'aws_security_group')
+            | list
+          }}
+
+    - name: Alert on security group drift (rule count changed)
+      ansible.builtin.debug:
+        msg: |
+          🚨 SECURITY GROUP DRIFT: {{ item.resource_id }}
+          Attribute : {{ item.attribute }}
+          Expected  : {{ item.expected }}
+          Actual    : {{ item.actual }}
+          ACTION    : Review and remove unauthorized rules via Terraform or AWS console.
+      loop: "{{ sg_drifts }}"
+      when: sg_drifts | length > 0
+
+    # ────────────────────────────────────────────────────────────────────────
+    # IAM — critical, never auto-remediate
+    # ────────────────────────────────────────────────────────────────────────
+    - name: Alert on IAM drift (critical — no auto-remediation)
+      ansible.builtin.debug:
+        msg: |
+          🔴 CRITICAL IAM DRIFT: {{ item.resource_id }}
+          Attribute : {{ item.attribute }}
+          Expected  : {{ item.expected }}
+          Actual    : {{ item.actual }}
+          ACTION    : Update Terraform and run 'terraform apply', or manually correct via AWS console.
+                      DO NOT auto-remediate IAM without full review.
+      loop: >-
+        {{
+          drift_report.drift_items
+          | selectattr('resource_type', 'equalto', 'aws_iam_role')
+          | list
+        }}
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Summary
+    # ────────────────────────────────────────────────────────────────────────
+    - name: Remediation summary
+      ansible.builtin.debug:
+        msg: |
+          ──────────────────────────────────────────────────
+          Remediation complete.
+          S3 buckets fixed  : {{ s3_remediation.results | default([]) | length }}
+          EC2 (manual)      : {{ ec2_type_drifts | length }}
+          SG alerts         : {{ sg_drifts | length }}
+          IAM alerts        : {{ drift_report.drift_items | selectattr('resource_type','equalto','aws_iam_role') | list | length }}
+          Dry run           : {{ dry_run }}
+          ──────────────────────────────────────────────────
+          Next step: Run 'terraform plan' to confirm all drift is accounted for,
+          then 'terraform apply' to reconcile any remaining differences.
