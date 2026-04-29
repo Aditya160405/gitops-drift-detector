@@ -160,12 +160,13 @@ class DriftWatchHandler(http.server.SimpleHTTPRequestHandler):
 
 def main():
     port = int(os.environ.get("PORT", 8080))
-    server = http.server.ThreadingHTTPServer(("localhost", port), DriftWatchHandler)
+    host = os.environ.get("HOST", "0.0.0.0")
+    server = http.server.ThreadingHTTPServer((host, port), DriftWatchHandler)
     print(f"""
 ╔══════════════════════════════════════════════════╗
 ║          DriftWatch Local Server                 ║
 ╠══════════════════════════════════════════════════╣
-║  Dashboard  →  http://localhost:{port}             ║
+║  Dashboard  →  http://{host}:{port}              ║
 ║  Run scan   →  click "Run Scan Now" in browser   ║
 ║  Stop       →  Ctrl+C                            ║
 ╚══════════════════════════════════════════════════╝
