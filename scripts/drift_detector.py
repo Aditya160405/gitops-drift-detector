@@ -124,6 +124,24 @@ class TerraformStateReader:
         values = state.get("values", {}).get("root_module", {})
         for resource in values.get("resources", []):
             resources[resource["address"]] = resource.get("values", {})
+
+        # Post-process: synthesize comparison keys that match what fetchers return
+        for addr, attrs in resources.items():
+            rtype = addr.split(".")[0]
+
+            # Security groups: count ingress / egress rules
+            if rtype == "aws_security_group":
+                attrs["ingress_rule_count"] = len(attrs.get("ingress", []))
+                attrs["egress_rule_count"]  = len(attrs.get("egress", []))
+
+            # S3 encryption: did Terraform define an encryption rule?
+            if rtype == "aws_s3_bucket_server_side_encryption_configuration":
+                rules = attrs.get("rule", [])
+                attrs["encryption_enabled"] = bool(
+                    rules
+                    and rules[0].get("apply_server_side_encryption_by_default")
+                )
+
         return resources
 
 
@@ -158,7 +176,6 @@ class AWSStateReader:
             "aws_instance": self._fetch_ec2_instance,
             "aws_security_group": self._fetch_security_group,
             "aws_s3_bucket": self._fetch_s3_bucket,
-            # These are the SEPARATE resource types Terraform actually uses:
             "aws_s3_bucket_public_access_block": self._fetch_s3_public_access_block,
             "aws_s3_bucket_server_side_encryption_configuration": self._fetch_s3_encryption,
             "aws_s3_bucket_versioning": self._fetch_s3_versioning,
@@ -185,10 +202,9 @@ class AWSStateReader:
         if not reservations:
             return None
         inst = reservations[0]["Instances"][0]
-        tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
         return {
             "instance_type": inst.get("InstanceType"),
-            "instance_state": inst["State"]["Name"],   # matches TF field name
+            "instance_state": inst["State"]["Name"],
             "monitoring": inst.get("Monitoring", {}).get("State") == "enabled",
             "subnet_id": inst.get("SubnetId"),
             "vpc_id": inst.get("VpcId"),
@@ -241,7 +257,6 @@ class AWSStateReader:
         return result
 
     def _fetch_s3_public_access_block(self, attrs: dict) -> dict | None:
-        """Fetcher for aws_s3_bucket_public_access_block resource."""
         bucket = attrs.get("bucket") or attrs.get("id")
         if not bucket:
             return None
@@ -259,7 +274,6 @@ class AWSStateReader:
             return None
 
     def _fetch_s3_encryption(self, attrs: dict) -> dict | None:
-        """Fetcher for aws_s3_bucket_server_side_encryption_configuration resource."""
         bucket = attrs.get("bucket") or attrs.get("id")
         if not bucket:
             return None
@@ -268,11 +282,7 @@ class AWSStateReader:
             rules = resp["ServerSideEncryptionConfiguration"]["Rules"]
             if not rules:
                 return {"encryption_enabled": False}
-            algo = rules[0].get("ApplyServerSideEncryptionByDefault", {}).get("SSEAlgorithm", "")
-            return {
-                "encryption_enabled": True,
-                # We only care if encryption disappeared — not which algo
-            }
+            return {"encryption_enabled": True}
         except self.s3.exceptions.ClientError:
             return {"encryption_enabled": False}
         except Exception as exc:
@@ -280,14 +290,12 @@ class AWSStateReader:
             return None
 
     def _fetch_s3_versioning(self, attrs: dict) -> dict | None:
-        """Fetcher for aws_s3_bucket_versioning resource."""
         bucket = attrs.get("bucket") or attrs.get("id")
         if not bucket:
             return None
         try:
             resp = self.s3.get_bucket_versioning(Bucket=bucket)
             status = resp.get("Status", "")
-            # Terraform stores this as versioning_configuration[0].status
             return {
                 "versioning_configuration": [{"status": status or "Disabled"}]
             }
@@ -367,7 +375,6 @@ IGNORED_ATTRIBUTES = {
                      "launch_template", "capacity_reservation_specification",
                      "enclave_options", "maintenance_options",
                      "private_dns_name_options",
-                     # These change automatically when instance stops — not real drift
                      "disable_api_termination", "disable_api_stop",
                      "instance_initiated_shutdown_behavior",
                      "associate_public_ip_address",
@@ -388,13 +395,11 @@ IGNORED_ATTRIBUTES = {
     "aws_s3_bucket": {"force_destroy", "lifecycle_rule", "tags", "tags_all"},
     "aws_iam_role":  {"tags", "tags_all", "inline_policy", "managed_policy_arns",
                       "role_last_used", "unique_id", "create_date"},
-    # These sub-resources only have a few meaningful fields — ignore bucket metadata
+    "aws_security_group": {"ingress", "egress", "owner_id", "arn", "revoke_rules_on_delete",
+                            "tags", "tags_all"},
     "aws_s3_bucket_public_access_block": {"id", "bucket"},
     "aws_s3_bucket_server_side_encryption_configuration": {"id", "bucket", "expected_bucket_owner", "rule"},
-    # versioning_configuration comparison handled separately — ignore the full nested object
-    # to avoid mfa_delete false positives; we check status only via _fetch_s3_versioning
-    "aws_s3_bucket_versioning": {"id", "bucket", "expected_bucket_owner", "mfa",
-                                  "versioning_configuration"},
+    "aws_s3_bucket_versioning": {"id", "bucket", "expected_bucket_owner", "mfa"},
     "aws_iam_role_policy": {"id", "role", "policy", "name", "name_prefix"},
     "aws_iam_instance_profile": {"id", "name", "role", "arn", "create_date",
                                   "unique_id", "name_prefix", "path",
@@ -405,14 +410,19 @@ SEVERITY_OVERRIDES = {
     # EC2
     ("aws_instance", "instance_state"): "critical",
     ("aws_instance", "instance_type"):  "high",
-    # S3 public access block (separate TF resource)
+    # Security Group rules
+    ("aws_security_group", "ingress_rule_count"): "high",
+    ("aws_security_group", "egress_rule_count"):  "medium",
+    # S3 public access block
     ("aws_s3_bucket_public_access_block", "block_public_acls"):       "critical",
     ("aws_s3_bucket_public_access_block", "block_public_policy"):     "critical",
     ("aws_s3_bucket_public_access_block", "ignore_public_acls"):      "critical",
     ("aws_s3_bucket_public_access_block", "restrict_public_buckets"): "critical",
-    # S3 encryption (separate TF resource)
+    # S3 encryption
     ("aws_s3_bucket_server_side_encryption_configuration", "encryption_enabled"): "critical",
-    # Legacy combined fetcher (kept for safety)
+    # S3 versioning
+    ("aws_s3_bucket_versioning", "versioning_configuration"): "medium",
+    # Legacy combined fetcher
     ("aws_s3_bucket", "block_public_acls"):   "critical",
     ("aws_s3_bucket", "block_public_policy"):  "critical",
     ("aws_s3_bucket", "encryption_enabled"):   "critical",
@@ -451,7 +461,6 @@ def compare(resource_type: str, resource_id: str,
         if key not in actual:
             continue
         live_val = actual[key]
-        # Normalize both sides — handles JSON key ordering differences
         if _normalize(expected_val) != _normalize(live_val):
             severity = SEVERITY_OVERRIDES.get((resource_type, key), default_severity)
             drifts.append(DriftItem(
@@ -478,7 +487,7 @@ class GitHubIssueCreator:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        self.repo = repo  # "owner/repo"
+        self.repo = repo
 
     def find_open_drift_issue(self, scan_label: str) -> int | None:
         url = f"{self.API}/repos/{self.repo}/issues"
@@ -546,9 +555,7 @@ class GitHubIssueCreator:
             f"🟡 {sum(1 for d in report.drift_items if d.severity == 'medium')} Medium &nbsp;|&nbsp; "
             f"🟢 {sum(1 for d in report.drift_items if d.severity == 'low')} Low"
         )
-
         rows = "\n".join(d.to_markdown_row() for d in report.drift_items)
-
         errors_section = ""
         if report.errors:
             errors_section = "\n### ⚠️ Scan Errors\n" + "\n".join(
@@ -582,31 +589,9 @@ class GitHubIssueCreator:
 To fix drift, run one of the following:
 
 ```bash
-# Option A — Re-apply Terraform (recommended)
-terraform plan   # review changes
+terraform plan
 terraform apply
-
-# Option B — Import the manually changed resource
-terraform import <resource_type>.<name> <resource_id>
-
-# Option C — Update Terraform state to match live AWS (use with caution)
-terraform state rm <resource_address>
-terraform import <resource_type>.<name> <resource_id>
 ```
-
----
-
-### How to Suppress False Positives
-
-Add a lifecycle ignore block in your Terraform:
-
-```hcl
-lifecycle {{
-  ignore_changes = [tags, user_data]
-}}
-```
-
----
 {errors_section}
 
 *This issue was auto-generated by the [GitOps Drift Detector](../../actions) pipeline.*
@@ -624,18 +609,12 @@ def save_report(report: DriftReport, path: str = "drift-report.json"):
     log.info("Drift report saved to %s", path)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Scan History Writer
-# ──────────────────────────────────────────────────────────────────────────────
-
 def append_scan_history(report: DriftReport, issue_url: str = "", history_path: str = ""):
-    """Append this scan result to scan-history.json (kept in dashboard/)."""
     if not history_path:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(script_dir)
         history_path = os.path.join(project_root, "dashboard", "scan-history.json")
 
-    # Load existing history
     history = []
     try:
         with open(history_path) as f:
@@ -643,18 +622,15 @@ def append_scan_history(report: DriftReport, issue_url: str = "", history_path: 
     except (FileNotFoundError, json.JSONDecodeError):
         pass
 
-    # Prepend new entry (newest first)
     entry = {
         "scan_id": report.scan_id,
         "timestamp": report.timestamp,
         "aws_region": report.aws_region,
         "total_resources_checked": report.total_resources_checked,
-        "drifted": len(report.drift_items),   # -1 = error, 0 = clean, >0 = drift count
+        "drifted": len(report.drift_items),
         "issue_url": issue_url,
     }
     history.insert(0, entry)
-
-    # Keep only the last 50 scans
     history = history[:50]
 
     with open(history_path, "w") as f:
@@ -685,7 +661,6 @@ def run():
 
     report = DriftReport(scan_id=scan_id, timestamp=timestamp, aws_region=region)
 
-    # ── 1. Load Terraform desired state ──────────────────────────────────────
     tf_reader = TerraformStateReader(
         state_path=tf_state_path or None,
         s3_bucket=tf_s3_bucket or None,
@@ -701,7 +676,6 @@ def run():
         save_report(report, output_path)
         sys.exit(1)
 
-    # ── 2. Fetch live AWS state and compare ───────────────────────────────────
     aws_reader = AWSStateReader(region=region)
     drifted_ids: set[str] = set()
 
@@ -726,10 +700,8 @@ def run():
 
     report.drifted_resources = len(drifted_ids)
 
-    # ── 3. Persist report ─────────────────────────────────────────────────────
     save_report(report, output_path)
 
-    # ── 4. Create / update / close GitHub issue ───────────────────────────────
     issue_url = ""
     if gh_token and gh_repo:
         gh = GitHubIssueCreator(token=gh_token, repo=gh_repo)
@@ -742,16 +714,14 @@ def run():
     else:
         log.warning("GITHUB_TOKEN / GITHUB_REPOSITORY not set — skipping issue creation")
 
-    # ── 5. Record scan in history ─────────────────────────────────────────────
     append_scan_history(report, issue_url=issue_url if report.has_drift else "")
 
-    # ── 6. Exit code ──────────────────────────────────────────────────────────
     if report.has_drift:
         log.error(
             "Drift detected: %d resource(s), %d attribute(s)",
             report.drifted_resources, len(report.drift_items),
         )
-        sys.exit(2)   # Non-zero so CI step is marked failed
+        sys.exit(2)
     else:
         log.info("✅ No drift detected across %d resource(s)", report.total_resources_checked)
         sys.exit(0)
